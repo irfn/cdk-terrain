@@ -100,7 +100,7 @@ jobs:
           body: |-
             Ran npm-check-updates and yarn upgrade to keep the `yarn.lock` file up-to-date.
           labels: dependencies,auto-approve,ci/run-all
-          team-reviewers: cdktf-maintainers
+          team-reviewers: cdktn-maintainers
           token: ${{ secrets.TERRAFORM_CDK_PUSH_GITHUB_TOKEN }}
 
   upgradePackage:
@@ -201,7 +201,7 @@ jobs:
             ${{ join(matrix.pr.packages, '\n -')}}
 
           labels: dependencies,auto-approve
-          team-reviewers: cdktf-maintainers
+          team-reviewers: cdktn-maintainers
           token: ${{ secrets.TERRAFORM_CDK_PUSH_GITHUB_TOKEN }}
           author: team-tf-cdk <github-team-tf-cdk@hashicorp.com>
 
@@ -263,6 +263,6 @@ jobs:
             This PR updates JSII across all packages.
 
           labels: dependencies,auto-approve
-          team-reviewers: cdktf-maintainers
+          team-reviewers: cdktn-maintainers
           token: ${{ secrets.TERRAFORM_CDK_PUSH_GITHUB_TOKEN }}
           author: team-tf-cdk <github-team-tf-cdk@hashicorp.com>

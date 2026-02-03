@@ -8,3 +8,6 @@ pipenv = "latest"
 
 "ubi:steveyegge/beads" = { version = "0.28.0", exe = "bd" }
 "ubi:zjrosen/perles" = "0.2.11"
+
+# # Works on Linux (not MacOS)
+# "ubi:getsentry/sentry-cli" = "3.1.0"

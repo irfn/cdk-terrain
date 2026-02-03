@@ -16,6 +16,8 @@ jobs:
   prepare-release:
     if: github.repository == 'open-constructs/cdk-terrain'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       tests: ${{ steps.build-test-matrix.outputs.tests }}
       version: ${{ steps.get_version.outputs.version }}
