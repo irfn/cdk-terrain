@@ -15,6 +15,7 @@ function buildNpmResponse(
   name = "test",
   cdktfVersion = "^0.12.2",
   hasRepository = true,
+  useCdktn = false,
 ): any {
   return {
     versions: {
@@ -25,16 +26,17 @@ function buildNpmResponse(
             version: "0.3.1",
           },
         },
-        // TODO: Update test helper for cdktn
         peerDependencies: {
-          cdktf: cdktfVersion, // legacy providers still peerDepend on cdktf
+          [useCdktn ? "cdktn" : "cdktf"]: cdktfVersion, // legacy providers still peerDepend on cdktf
         },
       },
     },
     repository:
       (hasRepository && {
         type: "git",
-        url: `git+https://github.com/cdktf/cdktf-provider-${name}.git`,
+        url: useCdktn
+          ? `git+https://github.com/cdktn-io/cdktn-provider-${name}.git`
+          : `git+https://github.com/cdktf/cdktf-provider-${name}.git`,
       }) ||
       {},
   };
@@ -152,6 +154,22 @@ describe("prebuilt-providers", () => {
       expect(scope.isDone()).toBeFalsy();
       nock.cleanAll();
     });
+
+    it("succeeds when package cdktn found", async () => {
+      nock("https://registry.npmjs.org/")
+        .get(new RegExp("/@cdktn/.*"))
+        .reply(200, buildNpmResponse("2.3.0", "test", "^0.12.2", true, true));
+
+      await expect(
+        getAllPrebuiltProviderVersions("@cdktn/test"),
+      ).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            packageVersion: "2.3.0",
+          }),
+        ]),
+      );
+    });
   });
 
   // TODO rebuild these tests when final url is known
@@ -162,7 +180,7 @@ describe("prebuilt-providers", () => {
         .replyWithError({ code: "ETIMEDOUT" });
 
       await expect(
-        getNpmPackageName(ProviderConstraint.fromConfigEntry("test")),
+        getNpmPackageName(ProviderConstraint.fromConfigEntry("test"), false),
       ).rejects.toThrowError("Connection error");
     });
 
@@ -181,7 +199,7 @@ describe("prebuilt-providers", () => {
         });
 
       await expect(
-        getNpmPackageName(ProviderConstraint.fromConfigEntry("test")),
+        getNpmPackageName(ProviderConstraint.fromConfigEntry("test"), false),
       ).resolves.toEqual("@cdktf/provider-test");
     });
 
@@ -193,7 +211,7 @@ describe("prebuilt-providers", () => {
         });
 
       await expect(
-        getNpmPackageName(ProviderConstraint.fromConfigEntry("test")),
+        getNpmPackageName(ProviderConstraint.fromConfigEntry("test"), false),
       ).resolves.toEqual("@cdktf/provider-test");
     });
   });

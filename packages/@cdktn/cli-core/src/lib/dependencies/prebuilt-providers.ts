@@ -87,6 +87,7 @@ export async function getAllPrebuiltProviders() {
 
 export async function getNpmPackageName(
   constraint: ProviderConstraint,
+  useCdktn: boolean,
 ): Promise<string | undefined> {
   const providers = await getAllPrebuiltProviders();
 
@@ -100,7 +101,7 @@ export async function getNpmPackageName(
   }
   const name = entry[0];
 
-  return `@cdktf/provider-${name}`;
+  return useCdktn ? `@cdktn/provider-${name}` : `@cdktf/provider-${name}`;
 }
 
 type PackageJson = {
@@ -123,6 +124,7 @@ type PackageJson = {
   };
   peerDependencies?: {
     cdktf?: string;
+    cdktn?: string;
   };
   repository?: {
     type: string;
@@ -159,6 +161,8 @@ type PrebuiltProviderVersion = {
   packageVersion: string; // e.g. "7.0.42"
   providerVersion: string; // e.g. "4.12.1"
   cdktfPeerDependencyConstraint: string; // e.g. "^10.0.0"
+  cdktnPeerDependencyConstraint: string;
+  packageName: string;
 };
 
 export async function getPrebuiltProviderRepositoryName(
@@ -188,16 +192,22 @@ export async function getAllPrebuiltProviderVersions(
   const versions = Object.entries(result.versions)
     .map(([version, packageJson]) => {
       const provider = packageJson.cdktf?.provider;
-      if (!provider || !packageJson.peerDependencies?.cdktf) {
+      if (
+        !provider ||
+        (!packageJson.peerDependencies?.cdktf &&
+          !packageJson.peerDependencies?.cdktn)
+      ) {
         logger.trace(
-          `skipping version ${version} of ${packageName} as it does not have a cdktf.provider or peerDependencies.cdktf in package.json`,
+          `skipping version ${version} of ${packageName} as it does not have a cdktf.provider or peerDependencies.cdktf/cdktn in package.json`,
         );
         return undefined;
       }
       return {
+        packageName,
         packageVersion: version,
         providerVersion: provider.version,
         cdktfPeerDependencyConstraint: packageJson.peerDependencies.cdktf,
+        cdktnPeerDependencyConstraint: packageJson.peerDependencies.cdktn,
       };
     })
     .filter((v) => v !== undefined) as PrebuiltProviderVersion[];
@@ -227,22 +237,41 @@ function cdktfVersionMatches(
 export async function getPrebuiltProviderVersions(
   constraint: ProviderConstraint,
   cdktfVersion: string,
-): Promise<string[] | null> {
-  const providerName = await getNpmPackageName(constraint); // TODO: add lots of debug logs to this call
+): Promise<{ name: string; version: string }[] | null> {
+  const cdktfProviderName = await getNpmPackageName(constraint, false);
+  const cdktnProviderName = await getNpmPackageName(constraint, true);
 
   // no pre-built provider exists
-  if (!providerName) {
+  if (!cdktfProviderName && !cdktnProviderName) {
     return null;
   }
 
-  const versions = await getAllPrebuiltProviderVersions(providerName);
+  const cdktfVersions = cdktfProviderName
+    ? await getAllPrebuiltProviderVersions(cdktfProviderName)
+    : ([] as PrebuiltProviderVersion[]);
   logger.debug(
-    `Found versions for ${providerName}: ${JSON.stringify(versions, null, 2)}`,
+    `Found versions for ${cdktfProviderName}: ${JSON.stringify(
+      cdktfVersions,
+      null,
+      2,
+    )}`,
   );
+
+  const cdktnVersions = cdktnProviderName
+    ? await getAllPrebuiltProviderVersions(cdktnProviderName)
+    : ([] as PrebuiltProviderVersion[]);
+  logger.debug(
+    `Found versions for ${cdktnProviderName}: ${JSON.stringify(cdktnVersions, null, 2)}`,
+  );
+
+  const versions = cdktfVersions.concat(cdktnVersions);
 
   // find first the version that matches the requested provider version and cdktf version
   const matchingVersions = versions.filter((v) => {
-    if (!cdktfVersionMatches(cdktfVersion, v.cdktfPeerDependencyConstraint)) {
+    if (
+      !cdktfVersionMatches(cdktfVersion, v.cdktfPeerDependencyConstraint) &&
+      !cdktfVersionMatches(cdktfVersion, v.cdktnPeerDependencyConstraint)
+    ) {
       return false; // skip if cdktf version does not match
     }
     if (constraint.version) {
@@ -255,13 +284,15 @@ export async function getPrebuiltProviderVersions(
     return null;
   }
   const npmPackageVersions = matchingVersions
-    .map((matchingVersion) => matchingVersion.packageVersion)
-    .sort(semver.compare)
+    .map((matchingVersion) => ({
+      name: matchingVersion.packageName,
+      version: matchingVersion.packageVersion,
+    }))
+    .sort((a, b) => semver.compare(a.version, b.version))
     .reverse();
   return npmPackageVersions;
 }
 
-// TODO: Support prebuilt CDKTN providers
 export async function getPrebuiltProviderVersionInformation(
   packageName: string,
   packageVersion: string,
@@ -286,5 +317,6 @@ export async function getPrebuiltProviderVersionInformation(
     providerName,
     providerVersion: result.cdktf.provider.version,
     cdktfVersion: result.peerDependencies["cdktf"],
+    cdktnVersion: result.peerDependencies["cdktn"],
   };
 }

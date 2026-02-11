@@ -172,18 +172,19 @@ export class DependencyManager {
     }
 
     throw Errors.Usage(
-      `Trying to upgrade ${constraint.simplifiedName} but it is not installed, please use "cdktf provider add ${constraint.simplifiedName}" to add it.`,
+      `Trying to upgrade ${constraint.simplifiedName} but it is not installed, please use "cdktn provider add ${constraint.simplifiedName}" to add it.`,
     );
   }
 
   async getCurrentlyInstalledVersion(constraint: ProviderConstraint) {
     logger.info(`Checking if ${constraint.simplifiedName} is installed...`);
-    const packageName = await this.tryGetPackageName(constraint);
+    const cdktfPackageName = await this.tryGetPackageName(constraint, false);
+    const cdktnPackageName = await this.tryGetPackageName(constraint, true);
 
-    if (!packageName) return; // not available as pre-built provider, so can't be installed as such
+    if (!cdktfPackageName && !cdktnPackageName) return; // not available as pre-built provider, so can't be installed as such
 
     logger.debug(
-      `Expecting package ${packageName} to be installed if provider is installed as pre-built one`,
+      `Expecting package ${cdktfPackageName} or ${cdktnPackageName} to be installed if provider is installed as pre-built one`,
     );
 
     let installedPackages;
@@ -197,7 +198,9 @@ export class DependencyManager {
       `Installed packages found: ${JSON.stringify(installedPackages, null, 2)}`,
     );
 
-    return installedPackages.find((pkg) => pkg.name === packageName)?.version;
+    return installedPackages.find(
+      (pkg) => pkg.name === cdktfPackageName || pkg.name === cdktnPackageName,
+    )?.version;
   }
 
   async upgradePrebuiltProvider(
@@ -208,15 +211,14 @@ export class DependencyManager {
       `Searching for latest matching version of ${constraint.simplifiedName}`,
     );
 
-    const packageName = await this.getPackageName(constraint);
-    const packageVersion = await this.getMatchingProviderVersion(constraint);
+    const { name, version } = await this.getMatchingProviderVersion(constraint);
 
-    logger.debug(`Found package ${packageName}@${packageVersion}`);
-    if (packageVersion !== currentVersion) {
-      await this.packageManager.addPackage(packageName, packageVersion);
+    logger.debug(`Found package ${name}@${version}`);
+    if (version !== currentVersion) {
+      await this.packageManager.addPackage(name, version);
     } else {
       console.log(
-        `The latest version of ${packageName} is already installed: ${packageVersion}`,
+        `The latest version of ${name} is already installed: ${version}`,
       );
     }
   }
@@ -259,32 +261,29 @@ export class DependencyManager {
 
   private async tryGetPackageName(
     constraint: ProviderConstraint,
+    useCdktn: boolean,
   ): Promise<string | undefined> {
-    const npmPackageName = await getNpmPackageName(constraint);
+    const npmPackageName = await getNpmPackageName(constraint, useCdktn);
 
     if (!npmPackageName) return;
 
+    return this.tryGetLanguagePackageName(npmPackageName);
+  }
+
+  private async tryGetLanguagePackageName(
+    npmPackageName: string,
+  ): Promise<string | undefined> {
     const prebuiltProviderRepository =
       await getPrebuiltProviderRepositoryName(npmPackageName);
 
-    return this.convertPackageName(npmPackageName, prebuiltProviderRepository);
-  }
-
-  private async getPackageName(
-    constraint: ProviderConstraint,
-  ): Promise<string> {
-    const packageName = await this.tryGetPackageName(constraint);
-    if (!packageName) {
-      throw Errors.Usage(
-        `Could not find pre-built provider for ${constraint.source}`,
-      );
-    }
-    return packageName;
+    return this.convertPackageName(
+      npmPackageName,
+      prebuiltProviderRepository,
+      npmPackageName.startsWith("@cdktn"),
+    );
   }
 
   async getMatchingProviderVersion(constraint: ProviderConstraint) {
-    const packageName = await this.getPackageName(constraint);
-
     const prebuiltProviderNpmVersions = await getPrebuiltProviderVersions(
       constraint,
       this.cdktfVersion,
@@ -296,7 +295,6 @@ export class DependencyManager {
     }
 
     const packageVersion = await this.getLanguageSpecificPackageVersion(
-      packageName,
       prebuiltProviderNpmVersions,
     );
 
@@ -314,9 +312,8 @@ export class DependencyManager {
       `adding pre-built provider ${constraint.source} with version constraint ${constraint.version} for cdktf version ${this.cdktfVersion}`,
     );
 
-    const packageName = await this.getPackageName(constraint);
-    const packageVersion = await this.getMatchingProviderVersion(constraint);
-    await this.packageManager.addPackage(packageName, packageVersion, silent);
+    const { name, version } = await this.getMatchingProviderVersion(constraint);
+    await this.packageManager.addPackage(name, version, silent);
 
     // TODO: more debug logs
   }
@@ -325,9 +322,8 @@ export class DependencyManager {
   // This happens mostly in cases where a provider update failed to publish to one of the registries
   // In that case we use the latest version that was published successfully and works with the current cdktf release
   private async getLanguageSpecificPackageVersion(
-    packageName: string,
-    prebuiltProviderNpmVersions: string[],
-  ) {
+    prebuiltProviderNpmVersions: { name: string; version: string }[],
+  ): Promise<{ name: string; version: string } | null> {
     logger.debug(
       "Found possibly matching versions (released on npm): ",
       prebuiltProviderNpmVersions,
@@ -336,18 +332,21 @@ export class DependencyManager {
       "Searching through package manager to find latest available version for given language",
     );
 
-    for (const version of prebuiltProviderNpmVersions) {
+    for (const { name, version } of prebuiltProviderNpmVersions) {
       try {
+        const languagePackageName = await this.tryGetLanguagePackageName(name);
+        if (!languagePackageName) continue;
+
         const isAvailable = await this.packageManager.isNpmVersionAvailable(
-          packageName,
+          languagePackageName,
           version,
         );
         if (isAvailable) {
-          return version;
+          return { name: languagePackageName, version };
         }
       } catch (err) {
         logger.info(
-          `Could not find version ${version} for package ${packageName}: '${err}'. Skipping...`,
+          `Could not find version ${version} for package ${name}: '${err}'. Skipping...`,
         );
       }
     }
@@ -380,7 +379,20 @@ export class DependencyManager {
   /**
    * Converts an NPM package name of a pre-built provider package to the name in the target language
    */
-  private convertPackageName(name: string, repository: string): string {
+  private convertPackageName(
+    name: string,
+    repository: string,
+    useCdktn: boolean,
+  ): string | undefined {
+    return useCdktn
+      ? this.convertPackageNameCdktn(name, repository)
+      : this.convertPackageNameCdktf(name, repository);
+  }
+
+  /**
+   * Converts an NPM package name of a pre-built provider package to the name in the target language
+   */
+  private convertPackageNameCdktf(name: string, repository: string): string {
     const providerName = name.replace("@cdktf/provider-", "");
     switch (this.targetLanguage) {
       case Language.GO: // e.g. github.com/cdktf/cdktf-provider-opentelekomcloud-go/opentelekomcloud
@@ -405,18 +417,48 @@ export class DependencyManager {
   }
 
   /**
+   * Converts an NPM package name of a pre-built provider package to the name in the target language
+   */
+  private convertPackageNameCdktn(
+    name: string,
+    repository: string,
+  ): string | undefined {
+    const providerName = name.replace("@cdktn/provider-", "");
+    switch (this.targetLanguage) {
+      case Language.GO: // e.g. github.com/cdktf/cdktf-provider-opentelekomcloud-go/opentelekomcloud
+        if (repository) {
+          return `${repository}-go/${providerName}`;
+        }
+
+        return `github.com/cdktn-io/cdktn-provider-${providerName}-go/${providerName}`;
+      case Language.TYPESCRIPT: // e.g. @cdktf/provider-random
+        return name; // already the correct name
+      case Language.CSHARP: // e.g. HashiCorp.Cdktf.Providers.Opentelekomcloud
+        return `Io.Cdktn.Providers.` + toPascalCase(providerName);
+      case Language.JAVA: // e.g. com.hashicorp.opentelekomcloud
+        return `io.cdktn.cdktn-provider-${providerName}`;
+      case Language.PYTHON: // e.g. cdktf-cdktf-provider-opentelekomcloud
+        return `cdktn-provider-${providerName}`;
+      default:
+        throw new Error(
+          `converting package name for language ${this.targetLanguage} not implemented yet`,
+        );
+    }
+  }
+
+  /**
    * Converts an package name of a pre-built provider package in target language to the name in npm
    * Inverse of: `convertPackageName`
    */
   private convertFromPackageNameToNpm(name: string): string {
-    const npmPackagePrefix = "@cdktf/provider-";
     const regexes = {
       [Language.GO]:
-        /github.com\/(?:cdktf|hashicorp)\/cdktf-provider-(.+)-go\//i,
+        /github.com\/(?:cdktf|hashicorp|cdktn-io)\/cdkt([fn])-provider-(.+)-go\//i,
       [Language.TYPESCRIPT]: /(.+)/i,
-      [Language.CSHARP]: /HashiCorp\.Cdktf\.Providers\.(.+)/i,
-      [Language.JAVA]: /com\.hashicorp\.cdktf-provider-(.+)/i,
-      [Language.PYTHON]: /cdktf-cdktf-provider-(.+)/i,
+      [Language.CSHARP]: /(?:HashiCorp|Io)\.Cdkt([fn])\.Providers\.(.+)/i,
+      [Language.JAVA]:
+        /(?:com\.hashicorp|io\.cdktn)\.cdkt([fn])-provider-(.+)/i,
+      [Language.PYTHON]: /(?:cdktf-)?cdkt([fn])-provider-(.+)/i,
     };
     const regex = regexes[this.targetLanguage];
     if (!regex) {
@@ -428,17 +470,19 @@ export class DependencyManager {
       throw new Error(`Package name is not in expected format: ${name}`);
     }
 
+    const npmPackagePrefix = `@cdkt${match[1]}/provider-`;
+
     switch (this.targetLanguage) {
       case Language.GO: // e.g. github.com/cdktf/cdktf-provider-opentelekomcloud-go/opentelekomcloud
-        return npmPackagePrefix + match[1];
+        return npmPackagePrefix + match[2];
       case Language.TYPESCRIPT: // e.g. @cdktf/provider-random
         return match[1]; // already the correct name
       case Language.CSHARP: // e.g. HashiCorp.Cdktf.Providers.Opentelekomcloud
-        return npmPackagePrefix + toSnakeCase(match[1]);
+        return npmPackagePrefix + toSnakeCase(match[2]);
       case Language.JAVA: // e.g. com.hashicorp.opentelekomcloud
-        return npmPackagePrefix + match[1];
+        return npmPackagePrefix + match[2];
       case Language.PYTHON: // e.g. cdktf-cdktf-provider-opentelekomcloud
-        return npmPackagePrefix + match[1];
+        return npmPackagePrefix + match[2];
       default:
         throw new Error(
           `converting package name for language ${this.targetLanguage} not implemented yet`,
